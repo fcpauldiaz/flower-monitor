@@ -11,6 +11,7 @@ from os import environ
 import time 
 import base64
 from captcha_solver import CaptchaSolver
+from celery.signals import task_success, after_task_publish
 
 
 app = Flask(__name__)
@@ -21,9 +22,14 @@ load_dotenv()
 # Celery configuration
 app.config['broker_url'] = environ.get('REDIS_URL')
 app.config['result_backend'] = environ.get('REDIS_URL')
+app.config['redis_max_connections'] = 10
 
 # Initialize Celery
-celery = Celery(app.name, broker=app.config['broker_url'])
+celery = Celery(app.name, broker=app.config['broker_url'],
+    redis_max_connections=20,
+    BROKER_TRANSPORT_OPTIONS = {
+        'max_connections': 10,
+    })
 celery.conf.update(app.config)
 
 
@@ -92,12 +98,16 @@ def scraper_nit(driver, nit):
 def long_task(self):
     """Background task that runs a long function with progress reports."""
     chrome_options = Options()
-    chrome_options.binary_location = environ.get("GOOGLE_CHROME_BIN")
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--no-sandbox")
-    driver = webdriver.Chrome(executable_path=environ.get("CHROMEDRIVER_PATH"), chrome_options=chrome_options)
+    if 'DYNO' in os.environ:
+        chrome_options.binary_location = environ.get("GOOGLE_CHROME_BIN")
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--no-sandbox")
+    if 'DYNO' in os.environ:
+        driver = webdriver.Chrome(executable_path=environ.get("CHROMEDRIVER_PATH"), chrome_options=chrome_options)
+    else:
+        driver = webdriver.Chrome()
     driver.get("https://portal.sat.gob.gt/portal/verificador-integrado/")
     time.sleep(0.5)
 
@@ -110,6 +120,16 @@ def long_task(self):
     results = scraper_nit(driver, "84797428")
     return {'current': 100, 'total': 100, 'status': 'Task completed!',
             'result': results}
+
+@after_task_publish.connect
+def task_sent_handler(sender=None, headers=None, body=None, **kwargs):
+    # information about task are located in headers for task messages
+    # using the task protocol version 2.
+    print (sender, headers, body)
+
+@task_success.connect
+def task_success_handler(sender=None, headers=None, body=None, **kwargs):
+    print (sender, headers, body)
 
 
 @app.route('/', methods=['GET'])
